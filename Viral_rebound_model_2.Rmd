@@ -1,0 +1,831 @@
+---
+title: "Appendix-Viral_rebound_model"
+author: "Li Zha"
+date: "9/17/2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T,
+                     warning=FALSE)
+```
+
+```{r }
+library(nlme)
+library(MASS)
+library(ggplot2)
+library(tidyverse)
+```
+
+```{r load data}
+raw_data <- read.csv("rebound_data.csv",head=T)
+attach(raw_data)
+```
+
+
+```{r data explor}
+  # If RNA_V = -1, indicate the observation as censored and replace RNA_V with RNA_L.
+  # Take log10 to RNA_V. Convert time from days to months. 
+
+a <- raw_data %>% 
+  mutate(censor = ifelse(RNA_V==-1, 1, 0)) %>% 
+  group_by(PATIENT,treatment)%>% 
+  #distinct(RNA_V,.keep_all = TRUE)%>%
+  mutate(RNA_V = ifelse(RNA_V==-1, 0.5*RNA_L, RNA_V))%>%
+  mutate(log10 = log10(RNA_V)) %>% 
+    filter(days_from_seroco<1000)%>% 
+    mutate(time = days_from_seroco/30) %>%  #1. days cut to 1000. 
+    filter(!is.na(RNA_V) & !is.na(time))
+  
+before_ART <- a %>% 
+    filter(treatment==1) 
+
+after_ART <- a%>% 
+    group_by(PATIENT) %>% 
+    mutate(ind = case_when(treatment == 1 ~ time)) %>%  
+    mutate(ind = max(ind, na.rm=TRUE)) %>% 
+    filter(time > ind) %>% 
+    mutate(time = time-ind) %>% 
+    dplyr::select(-ind)
+
+  # Only leave first num_months months data for after_ART
+
+  # plot raw_data (do not plot any "treatment=0" before "treatment=1")
+combined <- rbind(before_ART,after_ART)
+combined<-combined%>% 
+    arrange(PATIENT,days_from_seroco)
+  combined$PATIENT<-as.factor(combined$PATIENT)
+  combined$censor<-as.factor(combined$censor)
+  combined$treatment<-as.factor(combined$treatment)
+
+plot_all<-ggplot(combined, aes(x=days_from_seroco, y=log10)) + 
+    geom_point(aes(fill=factor(censor)),size=2, shape=21, stroke=0) +
+    geom_line(aes(group=PATIENT,color=treatment)) +
+    xlim(0, 1050)+
+    xlab("Day") +
+    scale_y_continuous(bquote("Viral load (in" ~ log[10]~"-scale)"))+
+    scale_fill_manual(values=c("black","orange"),labels = c("Observed data", "Censored data"))+
+    scale_color_manual(values=c("steelblue","black"),labels = c("After ART interruption", "Before ART interruption"))+
+    labs(color = "ART status", fill = "Data type")+ggtitle("Plot viral trajectories between individuals")+
+   ggsave("plot_all.png")
+
+
+```
+
+We also select out some patients. 
+```{r}
+samples<-combined %>%
+  filter(PATIENT==5|PATIENT==45|PATIENT==61|PATIENT==14|PATIENT==56|PATIENT==43|PATIENT==31|PATIENT==15)
+
+ggplot(samples, aes(x=days_from_seroco, y=log10)) + 
+    geom_point(aes(fill=factor(censor)),size=2, shape=21, stroke=0) +
+    geom_line(aes(group=PATIENT,color=treatment)) +
+    xlim(0, 1050)+
+    xlab("Day") +
+    scale_y_continuous(bquote("Viral load (in" ~ log[10]~"-scale)"))+
+    scale_fill_manual(values=c("black","orange"),labels = c("Observed data", "Censored data"))+
+    scale_color_manual(values=c("steelblue","black"),labels = c("After ART interruption", "Before ART interruption"))+
+    labs(color = "ART status", fill = "Data type")+ggtitle("Plot for 8 random selected patients")+
+    ggsave("plot_random_2.png")
+
+
+  before_ART<-before_ART%>% 
+    arrange(PATIENT,days_from_seroco)
+plot_before <- ggplot(before_ART, aes(x=days_from_seroco, y=log10)) + 
+    geom_point(aes(shape=factor(censor)),size=1, shape=21, stroke=0) +
+    geom_line(aes(group=PATIENT)) +
+    scale_x_continuous("Day") + 
+    scale_y_continuous(bquote("Viral load (in" ~ log[10]~"-scale)"))+
+    scale_fill_manual(values=c("black","red"),labels = c("Observed data", "Censored data"))+
+    labs(fill = "Data type")+ggtitle("before ART interruption")+
+    theme_classic()+theme(panel.grid.major =element_line(colour = "grey90"), panel.grid.minor =element_line(colour = "grey90"))+
+      suppressMessages(ggsave("plot_before.png"))
+
+  after_ART<-after_ART%>% 
+    arrange(PATIENT,days_from_seroco)
+plot_after <- after_ART %>% 
+    mutate(days = time*30) %>% 
+    ggplot(aes(x=days, y=log10)) + 
+    geom_point(aes(fill=factor(censor)),size=2, shape=21, stroke=0) +
+    geom_line(aes(group=PATIENT)) +
+    scale_x_continuous("Day") + 
+    scale_y_continuous(bquote("Viral load (in" ~ log[10]~"-scale)"))+
+    scale_fill_manual(values=c("black","red"),labels = c("Observed data", "Censored data"))+
+    labs(fill = "Data type")+ggtitle("after ART interruption")+
+    theme_classic()+theme(panel.grid.major =element_line(colour = "grey90"), panel.grid.minor =element_line(colour = "grey90"))+
+    suppressMessages(ggsave("plot_after.png"))
+
+```
+A total of 76 patients with HIV infected were enrolled in the Zurich Primary HIV Infection Study between November 2002 and July 2008 (Aceto et al., 2005). All participants were offered antiretroviral therapy (ART) independently of clinical indication. Prognostic factors such as CD4 count and plasma RNA level (viral load) were measured repetitively over time to determine the treatment efficacy of ART. With effective treatment, plasma RNA viral loads would decrease to undetectable levels ($<20$ to 50 copies/mL), or so called left censored viral loads. These values are ignored except the first censored values for each patient and are replaced with half of the detection limit being used. Meanwhile, CD4 count would increase dramatically to a normal level restoring immune function as the viral suppression takes effect during 6 to 12 months. Patients could choose to stop ART therapy afterwards, however, viral load may rebound as some HIV mutants are less drug resistant. Since most viral loads level would become stablize after the peak points, we choose 41 weeks of data for HIV analysis. 
+
+Figure 2.1 shows the entire viral load trajectory before and after the ART interruption with 41 weeks of follow-up. From the plot, viral loads decline rapidaly during first 250 days and some of them reach undetection limit, then rebound and become stablize after ART discontinution. We also randomly choose 6 patients from all observations and plot their viral loads in Figure 2.2. Large variations of viral load trajectories can be observed between petients after ART interruption, which suggests to incorporate individuals' effects in the model.   
+
+
+
+<A LME model for CD4 during ART>
+
+In HIV study, an increase in CD4 count represents the effectiveness of ART for viral suppression before ART interruption, since CD4 cell is the backbone of humans immunne system. Thus, CD4 count has been deemed an essential component in monitoring HIV treatment and predictaion in clinical progression for patients'care. However, the observed CD4 counts are usually assessed with measurement errors. To address this issue, we may fit a LME model on the observed CD counts, which specifically includes individual-sepecific deviations of CD4 values. We specify $z_{ij}$ be the CD4 value of individual i measured at time $t_{ij}$, where i = 1,2,...,n, j = 1,2,..$n_i$. We consider the following LME model for CD4 data: 
+\begin{equation}
+z_{ij} =u_{ij}^T\alpha + v_{ij}^Ta_i +\epsilon_{ij}\equiv z^*_{ij}+\epsilon_{ij}, \quad i=1,2,...,n, j=1,2,...,n
+\end{equation}
+where vectors $u_{ij}$ and $v_{ij}$ contain covariates including time, vector $\alpha$ contains fixed parameters and vector $a_i$ contains random effects, that is, betweensubject varaition. $z^*_{ij}$ is the unobserved CD4 value whose observed error-prone value is $z_{ij}$, and $\epsilon_{ij}$ is the measurement error, with $\epsilon_{ij}$ ∼ $N(0,\delta^2)$.
+
+Due to the right-skewed distribution of CD4 values, we consider take a log transformation to normalize the data. Figure 1 shows the transformed CD4 trajectories. It's obvious that trajectories vary among patients and the observations within each individual may have some correlations. Additionally, the plot presents a logarithmic trend during the first 10 months. We compare the two following models for CD4 values during an ART. 
+
+values during an ART is much preferred 
+\begin{equation}
+z_{ij} = \alpha_{1i} + \alpha_{2i}t_{ij} + \alpha_{3i}t^2_{ij} + \epsilon_{ij},
+\end{equation}
+\begin{equation}
+
+
+Figure 2.3 shows the CD4 trajectories during an ART. 
+
+```{r EDA}
+data1 <- raw_data %>% filter(!is.na(CD4_V))%>%
+    mutate(log_CD4_V = log(CD4_V))%>%
+    filter(days_from_seroco<1000)%>%
+    mutate(time = days_from_seroco/30)%>%
+    filter(treatment==1)%>%
+    group_by(PATIENT) %>% 
+    mutate(ind = case_when(treatment == 1 ~ time)) %>%  
+    mutate(ind = min(ind, na.rm=TRUE)) %>% 
+    mutate(time = time-ind) %>% 
+    dplyr::select(-ind)
+
+attach(data1)
+```
+
+The original CD4 values give a slightly right-skewed distribution.After using the log transformation, the CD4 data look more normally distributed. Therefore, we will use this transformation for the following analysis. 
+
+
+```{r LME on CD4}
+# plots for individual patients 
+ggplot(data1, aes(x = time, y =log_CD4_V,col=PATIENT))+
+    geom_point(size = 0.8)+
+    geom_line()+ 
+    # geom_smooth(method = "lm", formula = y ~ splines::bs(x, 2), se=FALSE)+
+    xlab('month') +
+    scale_y_continuous(bquote("CD4 (in" ~ log[e]~"-scale)"))+ theme_bw()+
+    theme(legend.position="none") +  
+    ggsave("plot_CD4.png")
+
+
+samples_CD4<-data1 %>%
+  filter(PATIENT==3|PATIENT==45|PATIENT==61|PATIENT==14)
+
+ggplot(samples_CD4, aes(x = time, y =log_CD4_V,col=factor(PATIENT)))+
+    geom_point(size = 0.8)+
+    geom_line()+ 
+    xlab('month') +
+    scale_y_continuous(bquote("CD4 (in" ~ log[e]~"-scale)"))+ theme_bw()+
+    theme(legend.position="none") +  
+    ggsave("plot_CD4.png")
+
+CD4_dat <- groupedData(log_CD4_V  ~ time|PATIENT, data=data1) 
+CD4_dat$time_square<- (CD4_dat$time)^2
+####??### why not working 
+fit_lm <- lmList(log_CD4_V~ time|PATIENT, data= CD4_dat)
+plot(intervals(fit_lm), main='Confidence Interval accross Individuals')
+
+
+####
+library(lmtest)
+#random effects on intercept and slope 
+lme1 <- lme(fixed=log_CD4_V  ~ time+month_spr, random = ~time,data=CD4_dat)
+summary(lme1)
+#random effects on intercept 
+lme2 <- lme(fixed=log_CD4_V  ~time+month_spr, random = ~1,data=CD4_dat)
+summary(lme2)
+AIC(lme1,lme3)
+lme3 <- lme(fixed=log_CD4_V  ~ time, random = ~time,data=CD4_dat)
+lrtest(lme1, lme3)
+
+xtable()
+```
+
+The LME models between CD4 and months clearly give a significant result with p-vlaue less than 0.05. Compared with LME_2 model, the LME_1 model with random effect on slope and intercept has a smaller AIC value. Therefore, we will choose LME_1 model as the best fitting for CD4 values with time. 
+
+From the summary, we see that the month term indicates small variation in individual CD4 values. 
+
+```{r model_diagnostic}
+qqnorm(resid(lme1))
+qqline(resid(lme1),col='red')
+```
+
+#mixed effect models
+
+#LME
+
+Linear mixed effect models (LME) are an extension of linear regression models that introduce both fixed and random effects. It is widely used for analyzing longitudinal data where there is non-independence within each group and large variability between groups. Fixed effects represnet the population-level effects that do not vary among different samples. This is certainly explained by the estimating the regression coefficients in simple linear regression.   
+
+
+Let y be the outcome variable for subject i,i=1,2,..n. Each subject is meausred repetatively with $m_i$ times. We can denote $y_i$ = $(y_{i1}, y_{i2},..y_{im})^T$. 
+
+
+
+Mixed-effects models are called “mixed” because they simultaneously model fixed and random effects. Fixed effects represent population-level (i.e., average) effects that should persist across experiments. Condition effects are typically fixed effects because they are expected to operate in predictable ways across various samples of participants and items. Indeed, in our example, modality will be modeled as a fixed effect because we expect that there is an average relationship between modality and response times that will turn up again if we conduct the same experiment with a different sample of participants and items.
+ixed effects represent population-level (i.e., average) effects that should persist across experiments
+
+
+
+\begin{equation}
+h_i(t)= h_0({t})\exp(x_i^T\beta)
+\end{equation}
+where $h_0({t})$ is an unspecified baseline hazard function, $\beta$ is a vector of unknown parameters (prison, clinic, dose) and $x_i$ is a vector of covariates from i =1,2,..,238 in this study. 
+
+Whereas fixed effects model average trends, random effects model the extent to which these trends vary across levels of some grouping factor (e.g., participants or items). Random effects are clusters of dependent data points in which the component observations come from the same higher-level group (e.g., an individual participant or item) and are included in mixed-effects models to account for the fact that the behavior of particular participants or items may differ from the average trend. Given that random effects are discrete units sampled from some population, they are inherently categorical (Winter, 2019). Thus, if you are wondering if an effect should be modeled as fixed or random and it is continuous in nature, be aware that it cannot be modeled as a random effect and therefore must be considered a fixed effect. In our hypothetical experiment, participants and words are modeled as random effects because they are randomly sampled from their respective populations, and we want to account for variability within those populations.
+
+Including random effects for participants and items resolves the nonindependence problem that often plagues multiple regression by accounting for the fact that some participants respond more quickly than others, and some items are responded to more quickly than others. These random deviations from the mean response time are called random intercepts. For example, the model may estimate that the mean response time for some condition is 1,000 ms, but specifying by-participant random intercepts allows the model to estimate each participant’s deviation from this fixed estimate of the mean response time. So if one participant tended to respond particularly quickly, that person’s individual intercept might be shifted down 150 ms (i.e., the estimated intercept would be 850 ms). Similarly, including by-item random intercepts enables the model to estimate each item’s deviation from the fixed intercept, reflecting the fact that some words tend to be responded to more quickly than others. In multiple regression, in contrast, the same regression line (both intercept and slope) is applied to all participants and items, so predictions tend to be less accurate than in mixed-effects regression, and residual error tends to be larger. Thus, in mixed modeling, the fixed-intercept estimate represents the average intercept, and random intercepts allow each participant and item to deviate from this average.2 These deviations are assumed to follow a normal distribution with a mean of zero and a variance that is estimated by the model. 
+
+ 
+```{r viral_load with adjusted days}
+# replace -1 as the min number 
+new_viral <- raw_data %>% 
+  mutate(censor = ifelse(RNA_V==-1, 1, 0)) %>% 
+  group_by(PATIENT,treatment)%>% 
+  distinct(RNA_V,.keep_all = TRUE)%>%
+  mutate(RNA_V = ifelse(RNA_V==-1, 0.5*RNA_L, RNA_V))%>%
+  mutate(log10 = log10(RNA_V)) %>% 
+    filter(days_from_seroco<1000)%>% 
+    mutate(time = days_from_seroco/30) %>%  #1. days cut to 1000. 
+    filter(!is.na(RNA_V) & !is.na(time))
+
+pre_pat=1
+minusone=FALSE
+##*##
+count=0 
+#To remove the repeated censored value
+for(i in 1:nrow(before_ART)){
+  if(before_ART$PATIENT[i]==pre_pat){
+    if(before_ART$RNA_V[i]!=-1){
+    minusone=FALSE
+    }
+    if(minusone==TRUE){
+    next   #after you append, you will still run -1 
+    }
+    if(before_ART$RNA_V[i]==-1){
+      count=count+1
+      minusone=TRUE
+      #only include the first appearance of -1 in data set
+      if(count==1){
+      data2$RNA_V[i] = data2$RNA_L[i]/2
+      }
+    }
+  }else{
+    pre_pat=data2$PATIENT[i]
+    #reset the count back to 0 for each type of patient
+    count=0
+    if(minusone==TRUE){
+      minusone=FALSE
+    }
+  } 
+}
+
+data2<-data2[!(data2$RNA_V==-1.0),]
+rownames(data2) <- 1:nrow(data2)
+
+
+# take a log-transformation 
+data2$log_rna<-log10(data2$RNA_V)
+data2$month <- data2$days_from_seroco/30  #rescale date 
+
+summary(data2)
+
+ggplot(data2, aes(x = month, y = log_rna,group=PATIENT,col=PATIENT))+
+    geom_point(size = 0.8)+
+    geom_line()+ 
+    xlab('months') +
+    ylab('log(10) RNA copies/ml')
+
+# remove outliers
+data2<- data2[!(data2$month>20),]
+data2<- data2[!(data2$log_rna>2 & data2$month>10),]
+data2<- data2[!(data2$log_rna>1.7 & data2$month>14.8),]
+data2<- data2[!(data2$log_rna<1 & data2$month>16.5),]
+
+
+ggplot(data2, aes(x = month, y = log_rna,group=PATIENT,col=PATIENT))+
+    geom_point(size = 0.8)+
+    geom_line()+ 
+    xlab('months') +
+    ylab('log(10) RNA copies/ml')
+
+```
+
+Next, we are going to fit a model for viral load with time before ART to estimate the condition of viral rebounds or decays after ART. We gave the viral load a log-10 transformation and only kept the data before ART. The plot shows the pattern on original data that it seems to have a quadratic trend. 
+
+
+
+```{r choose model}
+logexp2<-function(p1,b1,p2,b2,t) log10(exp(p1-b1*t)+exp(p2-b2*t))
+
+# Nonlinear model fit, assuming i.i.d. data 
+start0 <- c(p1=10,b1=2.8,p2=3.7,b2=0.0)  # starting value
+
+# Next, let's treat the data as longitudinal (or grouped) data
+
+#Method 1 :nls
+vir_dat <- groupedData(log_rna ~ month |PATIENT, data=data2)
+nls.fit <- nls(log_rna ~ logexp2(p1,b1,p2,b2,data2$month),data =data2,start=start0)
+summary(nls.fit)
+
+#Method 2:nlme
+start <- c(p1=15,b1=4.03,p2=6.02,b2=0.1) 
+nlme.fit <- nlme(log_rna ~ logexp2(p1,b1,p2,b2,month),
+              fixed = p1+b1+p2+b2 ~1,
+              random = p1+b1+p2+b2 ~1, 
+            data =vir_dat,start=c(start),verbose = TRUE)
+summary(nlme.fit)
+
+# Method 3: quadratic LME model
+vir_dat$month_squa <- (vir_dat$month)^2
+lme.fit <- lme(log_rna~month_squa+month,random=~month,data=vir_dat)
+summary(lme.fit)
+
+```
+
+The estimates of p1,b1,p2,b2 from nlme model are close to the estimates from the nls model. However, the standard errors are not reduced a lot. The difference in starting value may be one of the causes. We also tried with the quadratic LME model with method "REML" based on the original plot. Compared with the AIC value, the NLME model fits much better.  
+
+```{r LME on RNA_V}
+RNA_V_for_lme<- read.csv("RNA_V.csv",head=TRUE)
+RNA_V_for_lme<- RNA_V_for_lme[!(RNA_V_for_lme$month>9.8),] #9.8
+
+RNA_V_for_lme<- RNA_V_for_lme[!(RNA_V_for_lme$PATIENT==4),]
+ggplot(RNA_V_for_lme, aes(x = month, y = log_rna,group=PATIENT,col=PATIENT))+
+    geom_point(size = 0.8)+
+    geom_line()+ 
+    xlab('months') +
+    ylab('log(10) RNA copies/ml')
+RNA_V_data <- groupedData(log_rna ~ month|PATIENT, data=RNA_V_for_lme) 
+lme.new <- lme(fixed=log_rna ~month, random = ~month,data=RNA_V_data)
+summary(lme.new)
+ranef(lme.new)
+
+RNA_V_for_lme$month_sd <- (RNA_V_for_lme$month)^2
+RNA_V_data <- groupedData(log_rna ~ month+ month_sd|PATIENT, data=RNA_V_for_lme) 
+# lme.new.2 <- lme(fixed=log_rna ~month+ month_sd, random = ~month,data=RNA_V_data)
+
+
+```
+
+
+```{r residual diagnostics}
+par(mfrow=c(1,3))
+qqnorm(summary(nls.fit)$res,main="Nonlinear Model",ylab="Residuals")
+qqline(summary(nls.fit)$res)
+
+qqnorm(nlme.fit$res[,2],main="NLME Model",ylab="Residuals")
+qqline(nlme.fit$res[,2])
+
+
+# individual data vs fitted curves 
+# compare two methods
+```
+
+The QQ-plots show that the NLME model better fits the data since most of points lie fall on the straight line, except for some outliers. The QQ-plot for quadratic LME model is much better than the nonlinear model. However, points above 60% quantiles are not much represented on the quadratic LME model. 
+
+```{r residuals plot}
+par(mfrow=c(1,1))
+plot(fitted(nlme.fit),resid(nlme.fit,type="pearson"),col="blue") #a plot to check the constant standard deviation
+abline(h=0,lwd=2)
+```
+
+
+```{r prediction after ART}
+# check with the points after ART 
+
+data4<-reb_data[!is.na(reb_data$RNA_V),]
+data4<-data4[!is.na(data4$days_from_seroco),]
+
+df= NULL
+for(i in 1:nrow(data4)){
+  if(data4$RNA_V[i]==-1 && data4$treatment[i]==1){
+      df<-rbind(df,data4[i,])
+  }
+  else{
+    if(data4$treatment[i]==0)
+       df<-rbind(df,data4[i,])
+  }
+}
+
+df<-df[(df$treatment==1),]
+
+skip=FALSE
+prev_key=0
+temp=0
+for(i in 1:nrow(df)){
+  key=df$PATIENT[i] # the patient number 
+  val=df$days_from_seroco[i]   # days for seroco for each patient 
+  if(prev_key!=key){
+    prev_key=key
+    if(df$RNA_V[i]==-1){  #when the first-measured viral load under anti-treatment condition.
+      df$RNA_V[i]= df$RNA_L[i]/2
+      skip= FALSE
+    }
+    else{
+      temp<-df$days_from_seroco[i]
+      #df$days_from_seroco[i] = df$days_from_seroco[i]-temp
+    }
+  }else{
+    if (df$RNA_V[i]!=-1){
+      skip=TRUE
+      next
+    }else{
+      if(skip){
+        next
+      }else{
+        df$RNA_V[i]= df$RNA_L[i]/2
+        #the last viral load would be marked as zero if the next viral load was measured with -1 again
+        df$RNA_V[i-1]=0 
+      }
+    }
+  }
+}
+
+df<-df[(df$RNA_V!=0),]
+df<-df[!(df$PATIENT==4),]
+#data that time changed 
+data3<- reb_data[!is.na(reb_data$RNA_V),]
+data3<- data3[!is.na(data3$days_from_seroco),]
+# exclude the data that treatment equals zero before treatment equals one
+prev_key=0
+num=c()
+skip=FALSE
+for(i in 1:nrow(data3)){
+  key=data3$PATIENT[i] # the patient number
+  if(prev_key!=key){
+    prev_key=key
+    if(data3$treatment[i]==0){  #when the first-measured viral load under anti-treatment condition.
+      num=rbind(num,i) # add the index
+      skip=FALSE
+    }else{
+      next #go to the next index
+    }
+  }else{
+    if(!skip){  
+      if(data3$treatment[i]==0){ #if the treatment equals zero again
+        num=rbind(num,i)
+        skip=TRUE
+    }else{
+      skip=TRUE
+      next
+    }
+  }else{
+    next
+  }
+  }
+}
+
+data3<-data3[-c(num),]
+data3<-data3[(data3$treatment==0),]
+data3<-data3[!(data3$PATIENT==4),]
+df.new=NULL
+skip=FALSE
+prev_key=0
+temp=0
+for(i in 1:nrow(data3)){
+  key=data3$PATIENT[i] # the patient number 
+  if(prev_key!=key){
+    prev_key=key
+    if(data3$treatment[i]==0 && data3$RNA_V[i]==-1){
+      temp=i
+      skip=FALSE
+    }else{
+      df.new<-rbind(df.new, df[match(key,df$PATIENT),])
+    }
+  }else{
+    if(data3$treatment[i]==0 && data3$RNA_V[i]==-1){
+      df.new<-rbind(df.new, data3[i,])
+    }
+    else{
+      if(!skip){
+        df.new<-rbind(df.new, data3[temp,])
+        skip=TRUE
+      }else{
+        df.new<-rbind(df.new, data3[i,])
+      }
+    }
+  }
+}
+write.csv(df.new,file = "viral_rebounds.csv")
+```
+
+```{r rebounds}
+vir_reb <- read.csv("viral_rebounds.csv",head=T) # get data
+vir_reb<-vir_reb[-c(1)]
+skip=FALSE
+prev_key=0
+temp=0
+for(i in 1:nrow(vir_reb)){
+  key=vir_reb$PATIENT[i] # the patient number 
+  if(prev_key!=key){
+    prev_key=key
+    if(vir_reb$RNA_V[i]==-1.0){  
+      #when the first-measured viral load under anti-treatment condition.
+      temp<-vir_reb$days_from_seroco[i]
+      vir_reb$days_from_seroco[i] = vir_reb$days_from_seroco[i]-temp
+      vir_reb$RNA_V[i]= vir_reb$RNA_L[i]/2
+      skip= FALSE
+    }
+    else{
+        temp<-vir_reb$days_from_seroco[i]
+        vir_reb$days_from_seroco[i] = vir_reb$days_from_seroco[i]-temp
+    }
+  }else{
+    if (vir_reb$RNA_V[i]!=-1.0){
+      skip=TRUE
+      # adjust the days 
+      vir_reb$days_from_seroco[i]=vir_reb$days_from_seroco[i]-temp
+    }else{
+      if(skip){
+        vir_reb$days_from_seroco[i]=vir_reb$days_from_seroco[i]-temp
+        if(vir_reb$RNA_V[i]==-1.0){
+           vir_reb$RNA_V[i]=0 
+        }
+      }else{
+        temp<-vir_reb$days_from_seroco[i]
+        vir_reb$days_from_seroco[i] = vir_reb$days_from_seroco[i]-temp
+        vir_reb$RNA_V[i]= vir_reb$RNA_L[i]/2
+        #the last viral load would be marked as zero if the next viral load was measured with -1 again
+        vir_reb$RNA_V[i-1]=0 
+      }
+    }
+  }
+}
+
+# exclude the rest viral loads (under detection limit)
+vir_reb<-vir_reb[(vir_reb$RNA_V!=0),]
+
+
+#the observed RNA after ART interruption 
+vir_reb$log_RNA<-log10(vir_reb$RNA_V) 
+vir_reb$month<-(vir_reb$days_from_seroco/30) 
+
+rownames(vir_reb) <- 1:nrow(vir_reb)
+vir_reb<-vir_reb[!(vir_reb$month>5),]
+
+#find peak value 
+peak<-aggregate(log_RNA~ PATIENT, data = vir_reb, max)
+
+```
+
+
+```{r correlation}
+# testing relation with peak point of viral rebounds after ART
+#1. For random effects of LME model for CD4 counts
+rf<-ranef(lme1)
+
+#Table for random effects of the intercept and the slope are randomly presented with patient number. 
+#To pair with each patient's peak value of viral rebounds, we need to rearrange these random effects with proper order. 
+#number presents the order of random effects generated from ranef() function. 
+number<-c(31,34,45,59,23,58,19,46,36,13,27,52,26,3,10,21,64,40,68,39,7,
+          37,32,30,48,11,55,1,15,60,5,69,65,72,44,28,47,54,62,24,49,25,67,71
+          ,2,74,9,16,66,53,29,70,17,6,56,61,38,14,43,42,18,41,35,75,57,12,8,76,
+          63,33,73,51,50,4,20)
+rf<-cbind(rf,number)
+
+#reorder these random effects with ascending number. 
+rf.order <- rf[order(rf$number),] 
+
+#compute the correlation test using pearson's and spearman's
+cor.test(rf.order$month,peak$RNA_V, 
+                    method = "pearson")
+cor.test(rf.order$`(Intercept)`,peak$RNA_V, 
+                    method = "pearson")
+
+cor.test(rf.order$month, peak$RNA_V,  method = "spearman")
+cor.test(rf.order$`(Intercept)`, peak$RNA_V,  method = "spearman")
+
+```
+
+
+We conducted the correlation test between the random effect of individual CD4 values and the peak points of viral rebounds. Since p values are less significant, we could not reject the null hypothesis. This suggests the random effects for both intercepts and the slope do not have linear or strong impacts on peak points of viral rebound after ART interruption. Thus, the variation between individual CD4 values will not affect the viral trajectories to the peak points of viral rebounds.
+
+
+```{r nlme model}
+#2. compare the correlation between random effects of NLME model on viral loads to the peak points of viral rebound
+#same motivations to reorder the random effects in NLME model. 
+rf_1<-ranef(nlme.fit)
+
+lambda_hat<- nlme.fit$coefficients$fixed[3]
+b1i_hat<- nlme.fit$coefficients$random$PATIENT[,1]
+rand.ind <- nlme.fit$coefficients$random$PATIENT
+patid<- rownames(rand.ind)
+
+lambda <- b2i_hat + lambda_hat
+indiv_coef <- as.data.frame(cbind(lambda = lambda, patid = as.numeric(patid)))
+# indiv_coef <- select(indiv_coef, patid, lambda)
+dat2 <- dropout %>% left_join(y = indiv_coef, by = "patid")
+
+
+
+
+
+
+index<-c(13,54,10,27,56,18,19,24,64,31,57,74,3,62,2,55,41,5,25,50,21,
+         52,16,17,7,42,23,69,51,9,4,44,70,36,32,33,14,43,8,40,60,
+         49,67,34,65,15,73,28,12,35,30,20,59,29,6,63,68,75,47,53,11,38,
+         71,76,26,72,46,58,66,45,37,61,1,48,39)
+rf_1<-cbind(rf_1,index)
+rf_1 <- rf_1[order(rf_1$index),] 
+rf_1<-rf_1[(rf_1$index!=4),]
+
+rf_1<-cbind(rf_1,peak$log_RNA)
+colnames(rf_1)[5]<-'Patient'
+colnames(rf_1)[6]<-'Peak_vial'
+
+rf_lme<-ranef(lme.new)
+index1<-c(13,54,10,27,56,18,19,24,64,31,57,74,3,62,2,55,41,5,25,50,21,
+         52,16,17,7,42,23,69,51,9,44,70,36,32,33,14,43,8,40,60,
+         49,67,65,15,73,28,12,35,30,20,59,29,6,63,68,75,47,53,11,38,
+         71,76,26,72,46,58,66,45,37,61,1,48,39)
+rf_lme<-cbind(rf_lme,index1)
+rf_lme<- rf_lme[order(rf_lme$index1),] 
+
+#rf_lme<-rf_lme[(rf_lme$index1!=4),]
+new.mat <- NULL
+for(i in 1:nrow(rf_lme)){
+  temp<-grep(rownames(rf_lme)[i], peak$PATIENT)
+  new.mat <- rbind(new.mat, peak[temp[1],])
+}
+rf_lme<-cbind(rf_lme, new.mat)
+
+# create scatter plots to find the relation of each bi with its peak point.
+ggplot(rf_1, aes(x=p1,y= Peak_vial,group= Patient,col= Patient))+
+    geom_point(size = 0.8)+
+    xlim(-2,2)+
+    ylim(2,8)+
+    xlab('b_1i') +
+    ylab('Peak points')
+
+ggplot(rf_1, aes(x=b1, y= Peak_vial,group=Patient,col=Patient))+
+    geom_point(size = 0.8)+
+    xlim(-0.5,0.5)+
+    ylim(0,7)+
+    xlab('b_2i') +
+    ylab('Peak points')
+
+ggplot(rf_1, aes(x=p2,y= Peak_vial,group= Patient,col= Patient))+
+    geom_point(size = 0.8)+
+    xlim(-2,2)+
+    ylim(0,8)+
+    xlab('b_3i') +
+    ylab('Peak points')
+
+ggplot(rf_1, aes(x=b2,y= Peak_vial,group= Patient,col= Patient))+
+    geom_point(size = 0.8)+
+    xlim(-2,1)+
+    ylim(0,8)+
+    xlab('b_4i') +
+    ylab('Peak points')
+
+cor.test(rf_1$p1,rf_1$Peak_vial, 
+                    method = "pearson")
+cor.test(rf_1$b1,rf_1$Peak_vial, 
+                    method = "pearson")
+cor.test(rf_1$p2,rf_1$Peak_vial, 
+                    method = "pearson")
+cor.test(rf_1$b2,rf_1$Peak_vial, 
+                    method = "pearson")
+
+cor.test(rf_1$b1, rf_1$Peak_vial,  method = "spearman")
+cor.test(rf_1$b2, rf_1$Peak_vial,  method = "spearman")
+cor.test(rf_1$p1, rf_1$Peak_vial,  method = "spearman")
+cor.test(rf_1$p2, rf_1$Peak_vial,  method = "spearman")
+
+# the p-values are larger than 0.05, we do not reject the null hypothesis.
+
+ggplot(rf_lme, aes(x=rf_lme$`(Intercept)`,y=rf_lme$log_RNA,group=PATIENT,col= PATIENT))+
+    geom_point(size = 0.8)+
+    xlim(-2,2)+
+    ylim(2,7)+
+    xlab('intercept') +
+    ylab('Peak points')
+
+ggplot(rf_lme, aes(x=rf_lme$month, y=rf_lme$log_RNA,group=PATIENT,col=PATIENT))+
+    geom_point(size = 0.8)+
+    xlim(-0.1,0.1)+
+    ylim(0,7)+
+    xlab('slope') +
+    ylab('Peak points')
+
+cor.test(rf_lme$month,rf_lme$log_RNA,method = "pearson")
+cor.test(rf_lme$`(Intercept)`,rf_lme$log_RNA,method = "pearson")
+
+cor.test(rf_lme$month, rf_lme$log_RNA,  method = "spearman")
+cor.test(rf_lme$`(Intercept)`, rf_lme$log_RNA,  method = "spearman")
+
+```
+
+we created scatter plots to assess the relationship between random effects of decay rate and phase value by patients and peak point of viral rebounds. We observed that the random effect of first-phase decay rate and P1 baseline value will have a linear relation with the peak value of viral rebounds. 
+
+Indeed, with significant p values, the Pearson correlation test showed there was a positive correlation between P1 baseline value and peak value of viral rebounds. Also, there was a negative correlation between first-phase decay rate and peak value of viral rebounds. The higher the estimated individual-specific viral load decay rates, the possible lower chance to reach a peak point of viral rebounds. 
+
+```{r }
+#select data points that were measured after ART treatment interruption 
+# find all the viral loads till their peak value within each patient
+after_ART_peak =NULL
+prev_key=0
+skip=FALSE
+max=0
+for(i in 1:nrow(vir_reb)){
+  key=(vir_reb$PATIENT)[i] # the patient number 
+  val=(vir_reb$log_RNA)[i]   # RNA_V value for seroco for each patient 
+  max=(peak$log_RNA)[match(key,peak$PATIENT)]
+  if(prev_key!=key){
+    prev_key=key
+    skip=FALSE
+  }
+  if(!skip){
+    after_ART_peak<-rbind(after_ART_peak,vir_reb[i,])
+    if(max==val){
+      skip=TRUE
+    }
+  }
+}
+
+ggplot(after_ART_peak, aes(x=month, y=log_RNA ,group=PATIENT,col=PATIENT))+
+  geom_point(size = 0.8)+
+  geom_line()+ 
+  xlab('month') +
+  ylab('log(10)Viral loads')
+
+after_ART_peak<- after_ART_peak[!( after_ART_peak$art_month>5),]
+after_ART_peak<- after_ART_peak[!( after_ART_peak$log_art_RNA_V>6),]
+
+ggplot(after_ART_peak, aes(x = art_month, y=log_art_RNA_V ,group=PATIENT,col=PATIENT))+
+  geom_point(size = 0.8)+
+  geom_line()+ 
+  xlim(0,10)+
+  xlab('month') +
+  ylab('log(10)Viral loads')
+```
+
+
+```{r LME model for after-treatment-virus}
+
+# Fit a LME model with random effects on intercept and slope (no quadratic term of t)
+# to the rebound data (i.e., viral load data from time of ART
+# interruption to peak point for each individual), and get individual random effects estimates for
+# this new LME model.
+
+after_ART_peak_gp <- groupedData(log_art_RNA_V ~ art_month|PATIENT, data=after_ART_peak) 
+#random effects on intercept and slope 
+lme4 <- lme(fixed=log_art_RNA_V ~ art_month, random = ~art_month,data=after_ART_peak_gp)
+summary(lme4)
+
+ranef(lme4)
+# since normally the period for peak point is 36 weeks, we exclude the data points that 
+# were measured after 50 months
+after_ART_peak<- after_ART_peak[!(after_ART_peak$art_month>50),]
+after_ART_peak_gp_2 <- groupedData(log_art_RNA_V ~ art_month|PATIENT, data=after_ART_peak) 
+lme5 <- lme(fixed=log_art_RNA_V ~ art_month, random = ~art_month,data=after_ART_peak_gp_2)
+summary(lme5)
+```
+
+
+```{r prediction,echo = F}
+#predict viral load peak points or setpoints after ART interruption.
+id<-unique(PATIENT)
+sp<-c(13,73,40,65)
+data3<-reb_data[!is.na(reb_data$RNA_V),]
+#data3<-data3[(data3$treatment==0),]
+data3$days_from_seroco<- data3$days_from_seroco/30
+#replace these -1 to the half of the detectaion 
+for(i in 1:nrow(data3)){
+  if(data3$RNA_V[i]==-1){
+    data3$RNA_V[i] =data3$RNA_L[i]/2
+    }
+  }
+
+data3$RNA_V<-log10(data3$RNA_V) 
+
+fixed.effects(nlme.fit)
+
+# plot the predicted plot after ART 
+# fitted values by nlme
+for (i in id[sp]) {
+    x <- data3$days_from_seroco[data3$PATIENT==i]
+    y <- data3$RNA_V[data3$PATIENT==i]
+    p_1i<-fixed.effects(nlme.fit)[1]+rf_1$p1[i]
+    p_2i<-fixed.effects(nlme.fit)[3]+rf_1$p2[i]
+    lam_1i<-fixed.effects(nlme.fit)[2]+rf_1$b1[i]
+    lam_2i<-fixed.effects(nlme.fit)[4]+rf_1$b2[i]
+    y_pre<-log10(exp(p_1i-lam_1i*x)+exp(p_2i-lam_2i*x))
+
+    plot(x,y, xlim=c(0,60), ylim=c(-2,8), xlab="Month",
+              ylab=expression(paste(plain(log)[10], "( Viral Load)")), main=substitute(paste('Observed vs Prediction')))
+   points(x,y_pre,col="red")
+   lines(x,y_pre)
+}
+
+```
+
+The observed vs predicted plots show that the earlier predicted viral trajectories are similar to the observed ones. But we might further examinations on the models to improve the precision for predicted viral rebounds in later periods. 
+
+
+
